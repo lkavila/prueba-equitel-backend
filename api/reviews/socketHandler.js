@@ -1,17 +1,19 @@
 const Review = require("./model");
-const { getPlaceById } = require("../services/placeService");
+const { getPlaceById, updatePlaceRating } = require("../services/placeService");
 
 module.exports = (io, socket) => {
 
   listFourReviews = async (placeId, pagination) => {
     const { page = 1, limit = 4 } = pagination;
-    const skip = (page - 1) * limit;
     const reviews = await Review.find({ place: placeId })
       .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit)
-      .populate("user.name");
-    return reviews;
+      .limit(page * limit)
+      .populate("user", "username");
+    const data = {
+      reviews,
+      message: "ok",
+    }
+    return data;
   }
 
   const list = async (placeId, pagination) => {
@@ -37,10 +39,16 @@ module.exports = (io, socket) => {
 
   const create = async (review) => {
     const { placeId, rating, comment } = review;
-    const place = getPlaceById(placeId);
+    const place = await getPlaceById(placeId);
     let data = {};
     if (!place) {
       data = { message: "Place does not exits", error: true };
+      return socket.emit("emitted:review:create", data);
+    }
+
+    const foundReview = await Review.findOne({ place: placeId, user: socket.handshake.auth });
+    if (foundReview) {
+      data = { message: "You have already reviewed this place", error: true };
       return socket.emit("emitted:review:create", data);
     }
     const newReview = new Review({
@@ -54,7 +62,7 @@ module.exports = (io, socket) => {
         message: "ok",
         createdObject: createdReview,
       };
-
+      await updatePlaceRating(placeId);
       socket.emit("emitted:review:create", data);
 
       const list = await listFourReviews(placeId, {});
@@ -63,18 +71,18 @@ module.exports = (io, socket) => {
   };
 
   const update = async (review) => {
-    const { id, rating, comment } = review;
+    const { id, rating, comment, placeId } = review;
     let data = {};
     if (!id.match(/^[0-9a-fA-F]{24}$/)) {
       data = { message: "Invalid id", error: true };
       return socket.emit("emitted:review:update", data);
     }
 
-    const foundPlace = await Review.find({
+    const foundReview = await Review.find({
       _id: id,
       user: socket.handshake.auth,
     });
-    if (!foundPlace) {
+    if (!foundReview) {
       data = { message: "Review does not exits", error: true };
       return socket.emit("emitted:review:update", data);
     }
@@ -82,13 +90,14 @@ module.exports = (io, socket) => {
     const updated = await Review.updateOne({ _id: id }, { rating, comment });
     if (updated && updated.modifiedCount === 1) {
       data = { message: "ok" };
+      await updatePlaceRating(placeId);
     } else {
       data = { message: "Review was not updated", error: true };
     }
     return socket.emit("emitted:review:update", data);
   };
 
-  const deleteReview = async (id) => {
+  const deleteReview = async (id, placeId) => {
     let data = {};
     if (!id.match(/^[0-9a-fA-F]{24}$/)) {
       data = { message: "Invalid id", error: true };
@@ -98,6 +107,7 @@ module.exports = (io, socket) => {
     const query = await Review.findOneAndDelete({ _id: id });
     if (query) {
       data = { message: "ok", query };
+      await updatePlaceRating(placeId);
     } else {
       data = { message: "Review was not Deleted", error: true };
     }
