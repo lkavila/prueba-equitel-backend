@@ -44,7 +44,7 @@ module.exports = (io, socket) => {
           },
         },
         { $sort: { createdAt: -1 } },
-        { $limit: limit },
+        { $limit: 4 },
       ],
       as: "reviews",
     };
@@ -63,18 +63,38 @@ module.exports = (io, socket) => {
       as: "type",
     };
 
-    const unwind = {
+    const lookupForUser = {
+      from: "users",
+      localField: "user",
+      foreignField: "_id",
+      as: "user",
+    };
+
+    const unwindUser = {
+      path: "$user",
+      preserveNullAndEmptyArrays: false,
+    };
+
+    const proyectUser = {
+      "user._id": 0,
+      "user.password": 0,
+    }
+
+    const unwindType = {
       path: "$type",
       preserveNullAndEmptyArrays: false,
     };
 
     const result = await Place.aggregate([
       { $geoNear: near },
-      { $lookup: lookupForReviews },
+      //{ $lookup: lookupForReviews },
       { $limit: limit },
       { $skip: skip },
+      { $lookup: lookupForUser },
+      { $unwind: unwindUser },
+      { $project: proyectUser },
       { $lookup: lookupForType },
-      { $unwind: unwind },
+      { $unwind: unwindType },
     ]);
     const data = {
       places: result,
@@ -121,30 +141,30 @@ module.exports = (io, socket) => {
   };
 
   const update = async (place) => {
-    const { id, description, userId, typeName, name, location } = place;
-
+    const { _id, description, typeName, name, location } = place;
+    const userId = socket.handshake.auth;
     let data = { message: "Invalid id", error: true };
-    if (!id.match(/^[0-9a-fA-F]{24}$/)) {
+    if (!_id.match(/^[0-9a-fA-F]{24}$/)) {
       return socket.emit("emitted:places:update", data);
     }
 
-    data = {
-      message: "Place does not exits or was not created by user",
-      error: true,
-    };
-    const foundPlace = await Place.find({ _id: id, user: userId });
+    const foundPlace = await Place.find({ _id: _id, user: userId });
     if (!foundPlace) {
+      data = {
+        message: "Place does not exits or was not created by user",
+        error: true,
+      };
       return socket.emit("emitted:places:update", data);
     }
 
-    data = { message: "This place type does not exits", error: true };
     const placeType = await getPlaceTypeByName(typeName);
     if (!placeType) {
+      data = { message: "This place type does not exits", error: true };
       return socket.emit("emitted:places:update", data);
     }
 
     const updated = await Place.updateOne(
-      { _id: id },
+      { _id: _id },
       { description, type: placeType._id, name, location },
     );
     if (updated && updated.modifiedCount === 1) {
